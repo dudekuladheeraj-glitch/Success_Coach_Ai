@@ -4,3 +4,6 @@ __pycache__/
 *.pyc
 credentials.json
 .DS_Store
+token.json
+.env
+.streamlit/secrets.toml
