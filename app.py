@@ -128,12 +128,11 @@ import streamlit as st
 from graph.graph_builder import graph
 from services.sheets import get_roster
 from services.knowledge_base import is_knowledge_base_ready
+from services.memory import save_session_summary
+from services.session_summary import generate_session_summary
 
 st.set_page_config(page_title="Success Coach AI", page_icon="🎓", layout="wide")
 st.title("🎓 Success Coach AI")
-
-
-
 
 
 # ── Session state ─────────────────────────────────────────────────────────────
@@ -147,13 +146,15 @@ if "student_id" not in st.session_state:
 
 # ── Roster ────────────────────────────────────────────────────────────────────
 
+
 @st.cache_data(show_spinner=False)
 def load_student_options() -> list[tuple[str, str]]:
     try:
         roster = get_roster()
         return [
             (f"{row['student_id']} — {row['name']}", row["student_id"])
-            for row in roster if row.get("student_id")
+            for row in roster
+            if row.get("student_id")
         ]
     except Exception as exc:
         st.warning(f"Could not load roster from sheet: {exc}")
@@ -168,16 +169,20 @@ def load_student_options() -> list[tuple[str, str]]:
 
 with st.sidebar:
     st.header("Session Controls")
-    options       = load_student_options()
-    labels        = [label for label, _ in options]
-    ids           = [sid   for _, sid   in options]
-    default_index = ids.index(st.session_state.student_id) if st.session_state.student_id in ids else 0
+    options = load_student_options()
+    labels = [label for label, _ in options]
+    ids = [sid for _, sid in options]
+    default_index = (
+        ids.index(st.session_state.student_id)
+        if st.session_state.student_id in ids
+        else 0
+    )
     selected_label = st.selectbox("Select Student", labels, index=default_index)
-    selected_id    = ids[labels.index(selected_label)]
+    selected_id = ids[labels.index(selected_label)]
 
     if selected_id != st.session_state.student_id:
         st.session_state.student_id = selected_id
-        st.session_state.messages   = []
+        st.session_state.messages = []
         st.rerun()
 
     st.markdown(f"**Current student:** `{st.session_state.student_id}`")
@@ -186,10 +191,31 @@ with st.sidebar:
     if st.button("🗑️ Clear Chat"):
         st.session_state.messages = []
         st.rerun()
+if st.button("🔚 End Session"):
 
-    if st.button("🔚 End Session"):
-        st.session_state.clear()
-        st.rerun()
+    try:
+        with st.spinner("Generating session summary..."):
+
+            summary = generate_session_summary(st.session_state.messages)
+
+        st.subheader("📋 Session Summary")
+        st.info(summary)
+
+        with st.spinner("Saving to Memory..."):
+
+            result = save_session_summary(
+                student_id=st.session_state.student_id,
+                summary=summary,
+            )
+
+        st.success("✅ Successfully inserted into Mem0")
+
+        st.json(result)
+
+        st.session_state.messages = []
+
+    except Exception as e:
+        st.error(f"Failed to save session memory: {e}")
 
 
 # ── Chat history ──────────────────────────────────────────────────────────────
@@ -211,16 +237,18 @@ if message:
     with st.spinner("Thinking…"):
         try:
             history = st.session_state.messages[:-1][-20:]
-            result  = graph.invoke({
-                "message":         message,
-                "student_id":      st.session_state.student_id,
-                "intent":          "",
-                "student_context": {},
-                "alerts":          [],
-                "kb_context":      "",    # ← required
-                "response":        "",
-                "chat_history":    history,
-            })
+            result = graph.invoke(
+                {
+                    "message": message,
+                    "student_id": st.session_state.student_id,
+                    "intent": "",
+                    "student_context": {},
+                    "alerts": [],
+                    "kb_context": "",  # ← required
+                    "response": "",
+                    "chat_history": history,
+                }
+            )
             response = result["response"]
         except Exception as error:
             response = f"⚠️ Something went wrong.\n\n**Error:** `{error}`"
