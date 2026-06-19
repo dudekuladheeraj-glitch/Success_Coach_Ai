@@ -35,11 +35,11 @@ def load_student_options() -> list[tuple[str, str]]:
     except Exception as exc:
         st.warning(f"Could not load roster from sheet: {exc}")
         # Fallback so the app still runs during local dev / auth setup
-        # return [
-        #     ("STU001 — Arjun Kumar", "STU001"),
-        #     ("STU002 — Priya Sharma", "STU002"),
-        #     ("STU003 — Rahul Verma", "STU003"),
-        # ]
+        return [
+            ("STU001 — Arjun Kumar", "STU001"),
+            ("STU002 — Priya Sharma", "STU002"),
+            ("STU003 — Rahul Verma", "STU003"),
+        ]
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
