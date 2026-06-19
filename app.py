@@ -3,7 +3,7 @@ import streamlit as st
 from graph.graph_builder import graph
 from services.sheets import get_roster
 from services.knowledge_base import is_knowledge_base_ready
-from services.memory import save_session_memory
+from services.memory import save_session_summary
 from services.session_summary import extract_facts, generate_session_summary
 
 st.set_page_config(page_title="Success Coach AI", page_icon="🎓", layout="wide")
