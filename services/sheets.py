@@ -100,6 +100,7 @@ def _get_client() -> gspread.Client:
     # ── Streamlit Cloud: read from st.secrets ──────────────────────────────
     try:
         import streamlit as st
+        st.write("Has gcp_service_account:", "gcp_service_account" in st.secrets)
         if "gcp_service_account" in st.secrets:
             from google.oauth2.service_account import Credentials
             creds = Credentials.from_service_account_info(
@@ -108,6 +109,7 @@ def _get_client() -> gspread.Client:
             )
             _client = gspread.authorize(creds)
             return _client
+    
     except Exception:
         pass  # not running in Streamlit, fall through to file-based auth
 
