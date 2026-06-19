@@ -112,6 +112,7 @@ def _get_env(key: str) -> str:
     return os.getenv(key, "")
 
 
+
 def _get_collection():
     global _client, _collection
     if _collection is not None:
@@ -155,3 +156,9 @@ def is_knowledge_base_ready() -> bool:
     except Exception as exc:
         print(f"[knowledge_base] readiness check failed: {exc}")
         return False
+
+
+
+
+
+
