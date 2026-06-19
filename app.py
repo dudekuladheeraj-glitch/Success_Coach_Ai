@@ -133,20 +133,7 @@ st.set_page_config(page_title="Success Coach AI", page_icon="🎓", layout="wide
 st.title("🎓 Success Coach AI")
 
 
-# ── Knowledge Base Setup ──────────────────────────────────────────────────────
 
-def setup_knowledge_base():
-    if not is_knowledge_base_ready():
-        with st.spinner("Setting up knowledge base..."):
-            try:
-                from scripts.ingest import load_markdown, split_by_headings, ingest
-                text   = load_markdown()
-                chunks = split_by_headings(text)
-                ingest(chunks)
-            except Exception as e:
-                st.error(f"Knowledge base setup failed: {e}")
-
-setup_knowledge_base()
 
 
 # ── Session state ─────────────────────────────────────────────────────────────
