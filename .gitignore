@@ -3,3 +3,4 @@
 __pycache__/
 *.pyc
 credentials.json
+.DS_Store
