@@ -10,3 +10,9 @@ gspread>=6.0.0
 google-auth>=2.0.0
 google-auth-oauthlib>=1.0.0
 
+
+# Knowledge base / RAG
+chromadb>=0.5.0
+
+
+

@@ -7,3 +7,6 @@ credentials.json
 token.json
 .env
 .streamlit/secrets.toml
+chroma_db/
+SETUP_GUIDE_3.md
+scripts/
