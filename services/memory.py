@@ -121,15 +121,82 @@ def save_session_summary(student_id: str, summary: str):
     )
 
 
+def _wait_until_indexed(
+    student_id: str,
+    mem_type: str,
+    snippet: str,
+    timeout_seconds: int = 30,
+    poll_interval: float = 2.0,
+) -> bool:
+    """
+    Mem0's add() is asynchronous on their backend — it returns
+    {"status": "PENDING", "event_id": ...} immediately, before the memory
+    is actually written/indexed. This polls get_all() until an entry with
+    the right metadata type and matching text shows up, or times out.
+
+    Returns True if confirmed indexed, False if it timed out (the memory
+    may still land later — PENDING is not a failure, just "not yet").
+    """
+    import time
+
+    if not snippet or not snippet.strip():
+        return False
+
+    # Use a short, distinctive slice of the text to match against, since
+    # mem0 may rephrase/clean up the text during its own extraction.
+    needle = snippet.strip()[:40].lower()
+
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        try:
+            entries = _get_all(student_id)
+        except Exception as exc:
+            print(f"[memory] polling get_all failed: {exc}")
+            entries = []
+
+        for entry in entries:
+            if _extract_metadata(entry).get("type") != mem_type:
+                continue
+            text = _extract_text(entry).lower()
+            if needle[:20] in text or text[:20] in needle:
+                return True
+
+        time.sleep(poll_interval)
+
+    return False
+
+
 def save_session_memory(student_id: str, facts: str, summary: str) -> dict:
     """
-    Convenience wrapper: save both memory types for one session in one call.
-    Use this from the 'End Session' button instead of calling the two
-    functions above separately.
+    Convenience wrapper: save both memory types for one session in one call,
+    then poll mem0 until each is actually confirmed indexed (or times out).
+
+    Returns:
+        {
+          "fact_result":     <raw add() response, or None if no facts to save>,
+          "summary_result":  <raw add() response>,
+          "fact_confirmed":  bool,   # True once actually retrievable via get_all()
+          "summary_confirmed": bool,
+        }
+
+    Use fact_confirmed / summary_confirmed in the UI instead of just checking
+    that fact_result/summary_result is non-None — non-None only means
+    "accepted by mem0", not "actually saved and queryable yet".
     """
     fact_result = save_factual_memory(student_id, facts)
     summary_result = save_session_summary(student_id, summary)
-    return {"fact_result": fact_result, "summary_result": summary_result}
+
+    fact_confirmed = (
+        _wait_until_indexed(student_id, "fact", facts) if fact_result else False
+    )
+    summary_confirmed = _wait_until_indexed(student_id, "session_summary", summary)
+
+    return {
+        "fact_result": fact_result,
+        "summary_result": summary_result,
+        "fact_confirmed": fact_confirmed,
+        "summary_confirmed": summary_confirmed,
+    }
 
 
 # ── Read paths ─────────────────────────────────────────────────────────────────

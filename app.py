@@ -86,14 +86,31 @@ with st.sidebar:
                 st.caption("No new durable facts identified in this session.")
 
             # ── 2. Persist both to mem0, tagged separately ────────────────────
-            with st.spinner("Saving to Memory..."):
+            with st.spinner("Saving to Memory... (confirming indexing, may take a moment)"):
                 result = save_session_memory(
                     student_id=st.session_state.student_id,
                     facts=facts,
                     summary=summary,
                 )
 
-            st.success("✅ Successfully saved session memory")
+            if result.get("summary_confirmed"):
+                st.success("✅ Session summary saved and confirmed in memory")
+            else:
+                st.warning(
+                    "⏳ Session summary was accepted by Mem0 but is still "
+                    "processing in the background — it should appear shortly. "
+                    "Wait a bit before asking a 'recap last session' question."
+                )
+
+            if facts:
+                if result.get("fact_confirmed"):
+                    st.success("✅ Facts saved and confirmed in memory")
+                else:
+                    st.warning(
+                        "⏳ Facts were accepted by Mem0 but are still processing "
+                        "in the background — check back in a moment."
+                    )
+
             st.json(result)
 
             st.session_state.messages = []
