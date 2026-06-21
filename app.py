@@ -8,9 +8,54 @@ from services.memory import (
     mark_signal_actioned,
 )
 from services.session_summary import extract_facts, extract_signal, generate_session_summary
+from services.daily_planner import generate_daily_plan
+from services import calendar as cal
 
 st.set_page_config(page_title="Success Coach AI", page_icon="🎓", layout="wide")
 st.title("🎓 Success Coach AI")
+
+
+# ── Google Calendar OAuth callback (M7) ───────────────────────────────────────
+# Must run early, before any other widgets render, because Streamlit reruns
+# the whole script top-to-bottom and the ?code=... param only appears once,
+# right after Google redirects back here post-consent.
+
+if "calendar_credentials" not in st.session_state:
+    st.session_state.calendar_credentials = None
+
+_query_params = st.query_params
+
+if "code" in _query_params and not st.session_state.calendar_credentials:
+    try:
+        auth_code = _query_params["code"]
+
+        # Exchange Google auth code for credentials using the PKCE verifier
+        # stored earlier by cal.get_authorization_url()
+        oauth_state = _query_params.get("state")
+        _creds = cal.exchange_code_for_credentials(auth_code, oauth_state)
+        st.session_state.calendar_credentials = cal.credentials_to_dict(_creds)
+
+        # Clean temporary OAuth session values
+        cal.clear_oauth_temp_state()
+
+        # Drop ?code=... from the URL so refresh/rerun doesn't re-trigger token exchange
+        st.query_params.clear()
+
+        st.success("✅ Google Calendar connected successfully.")
+        st.rerun()
+
+    except Exception as exc:
+        # Clear the URL params and temp state even on failure so the coach can retry cleanly
+        cal.clear_oauth_temp_state()
+        st.query_params.clear()
+        st.error(f"Calendar connection failed: {exc}")
+
+elif "error" in _query_params:
+    # Coach declined consent on Google's screen, or some other OAuth error.
+    _oauth_error = _query_params.get("error", "unknown_error")
+    cal.clear_oauth_temp_state()
+    st.query_params.clear()
+    st.warning(f"Google Calendar connection was not completed ({_oauth_error}).")
 
 
 # ── Session state ─────────────────────────────────────────────────────────────
@@ -28,6 +73,13 @@ if "memory_saved_for_session" not in st.session_state:
 # Store end-session artifacts so they survive reruns
 if "session_artifacts" not in st.session_state:
     st.session_state.session_artifacts = None
+
+# M7: today's generated plan survives reruns until the coach regenerates it
+if "daily_plan" not in st.session_state:
+    st.session_state.daily_plan = None
+
+if "calendar_results" not in st.session_state:
+    st.session_state.calendar_results = None
 
 
 # ── Roster ────────────────────────────────────────────────────────────────────
@@ -105,6 +157,128 @@ def render_alert_panel():
                     st.rerun()
                 else:
                     st.error("Could not mark as actioned — see logs.")
+
+
+# ── Coach-facing daily plan (M7) ──────────────────────────────────────────────
+
+
+def render_calendar_connect():
+    """Shows a connect link if the coach hasn't authorized Calendar access yet."""
+    if cal.is_connected():
+        st.success("✅ Google Calendar connected")
+        if st.button("🔌 Disconnect Calendar"):
+            st.session_state.calendar_credentials = None
+            cal.clear_oauth_temp_state()
+            st.rerun()
+        return True
+
+    st.info("Connect your Google Calendar to create events from today's plan.")
+    try:
+        auth_url = cal.get_authorization_url()
+        st.link_button("🔗 Connect Google Calendar", auth_url)
+    except ValueError as exc:
+        st.error(f"Calendar isn't configured yet: {exc}")
+    return False
+
+
+def render_daily_plan():
+    st.subheader("📅 Today's Plan")
+    st.caption(
+        "Pulls every un-actioned signal across the roster and builds a "
+        "prioritized day — who needs attention, what kind of session, and why."
+    )
+
+    calendar_ready = render_calendar_connect()
+    st.divider()
+
+    if st.button("✨ Generate Today's Plan", type="primary"):
+        with st.spinner("Reviewing flagged students and building today's schedule..."):
+            try:
+                st.session_state.daily_plan = generate_daily_plan()
+                st.session_state.calendar_results = None  # clear stale results from a previous plan
+            except Exception as exc:
+                st.error(f"Failed to generate plan: {exc}")
+                st.session_state.daily_plan = None
+
+    plan = st.session_state.daily_plan
+    if plan is None:
+        return
+
+    if plan.get("flagged_count", 0) == 0:
+        st.success("✅ No students currently flagged — nothing to schedule today.")
+        return
+
+    if plan.get("parse_error"):
+        st.warning(
+            "⚠️ The plan came back in an unexpected format and couldn't be "
+            "fully parsed. Showing whatever could be salvaged below — "
+            "try regenerating if this looks incomplete."
+        )
+
+    assigned = plan.get("assigned_slots", [])
+    deferred = plan.get("deferred", [])
+
+    st.markdown(
+        f"**{plan['flagged_count']} student(s) flagged** — "
+        f"{len(assigned)} scheduled today, {len(deferred)} deferred."
+    )
+
+    if assigned:
+        st.markdown("### Scheduled today")
+        for i, slot in enumerate(assigned):
+            icon = SEVERITY_ICON.get(slot.get("severity", "low"), "⚪")
+            time_label = slot["time"].strftime("%I:%M %p")
+            name = slot.get("student_name", slot.get("student_id", "Unknown"))
+            session_type = slot.get("session_type", "Check-in")
+            with st.expander(
+                f"{time_label} — {icon} {name} — {session_type}",
+                expanded=True,
+            ):
+                st.markdown(f"**Why:** {slot.get('plain_reason', '')}")
+                st.caption(
+                    f"Severity: {slot.get('severity', 'unknown')} · "
+                    f"Urgency: {slot.get('urgency', 'unknown')} · "
+                    f"Duration: {slot.get('duration_minutes', 30)} min"
+                )
+
+    if deferred:
+        st.markdown("### Deferred to tomorrow")
+        for item in deferred:
+            icon = SEVERITY_ICON.get(item.get("severity", "low"), "⚪")
+            name = item.get("student_name", item.get("student_id", "Unknown"))
+            st.markdown(f"{icon} **{name}** — {item.get('defer_reason', '')}")
+
+    # ── Calendar event creation ─────────────────────────────────────────────
+    if assigned:
+        st.divider()
+        if not calendar_ready:
+            st.caption("Connect Google Calendar above to create events for this plan.")
+        else:
+            if st.button("📆 Create Calendar Events for Today's Plan"):
+                creds = cal.get_session_credentials()
+                if not creds:
+                    st.error("Calendar connection lost — please reconnect above.")
+                else:
+                    with st.spinner("Creating calendar events..."):
+                        try:
+                            results = cal.create_events_for_plan(creds, assigned)
+                            st.session_state.calendar_results = results
+                        except Exception as exc:
+                            st.error(f"Failed to create calendar events: {exc}")
+
+    results = st.session_state.get("calendar_results")
+    if results:
+        succeeded = [r for r in results if r["success"]]
+        failed    = [r for r in results if not r["success"]]
+        if succeeded:
+            st.success(f"✅ {len(succeeded)} event(s) created on your calendar.")
+            for r in succeeded:
+                if r.get("event_link"):
+                    st.caption(f"• [{r['student_id']}]({r['event_link']})")
+        if failed:
+            st.error(f"⚠️ {len(failed)} event(s) failed to create — see details:")
+            for r in failed:
+                st.caption(f"• {r['student_id']}: {r.get('error', 'unknown error')}")
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -249,43 +423,50 @@ with st.sidebar:
             st.rerun()
 
 
-# ── Chat history ──────────────────────────────────────────────────────────────
+# ── Main content: Chat (student-facing) vs Today's Plan (coach-facing) ────────
 
-for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
+tab_chat, tab_plan = st.tabs(["💬 Chat", "📅 Today's Plan"])
+with tab_chat:
+    # Chat input first so the newest message gets added to session state
+    message = st.chat_input("Ask your coach anything…")
+
+    if message:
+        # Save user message
+        st.session_state.messages.append({"role": "user", "content": message})
+
+        # Generate assistant reply
+        with st.spinner("Thinking…"):
+            try:
+                history = st.session_state.messages[:-1][-20:]
+                result = graph.invoke(
+                    {
+                        "message": message,
+                        "student_id": st.session_state.student_id,
+                        "intent": "",
+                        "student_context": {},
+                        "alerts": [],
+                        "kb_context": "",
+                        "response": "",
+                        "chat_history": history,
+                        "known_facts": [],
+                        "session_summaries": [],
+                    }
+                )
+                response = result["response"]
+            except Exception as error:
+                response = f"⚠️ Something went wrong.\n\n**Error:** `{error}`"
+
+        # Save assistant reply
+        st.session_state.messages.append({"role": "assistant", "content": response})
+
+        # Rerun so the full chat history redraws cleanly above the input
+        st.rerun()
+
+    # Render full chat history AFTER processing any new message
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
 
 
-# ── Chat input ────────────────────────────────────────────────────────────────
-
-message = st.chat_input("Ask your coach anything…")
-
-if message:
-    st.session_state.messages.append({"role": "user", "content": message})
-    with st.chat_message("user"):
-        st.markdown(message)
-
-    with st.spinner("Thinking…"):
-        try:
-            history = st.session_state.messages[:-1][-20:]
-            result  = graph.invoke(
-                {
-                    "message":         message,
-                    "student_id":      st.session_state.student_id,
-                    "intent":          "",
-                    "student_context": {},
-                    "alerts":          [],
-                    "kb_context":      "",
-                    "response":        "",
-                    "chat_history":    history,
-                    "known_facts":     [],
-                    "session_summaries": [],
-                }
-            )
-            response = result["response"]
-        except Exception as error:
-            response = f"⚠️ Something went wrong.\n\n**Error:** `{error}`"
-
-    st.session_state.messages.append({"role": "assistant", "content": response})
-    with st.chat_message("assistant"):
-        st.markdown(response)
+with tab_plan:
+    render_daily_plan()

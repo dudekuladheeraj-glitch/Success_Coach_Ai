@@ -10,3 +10,4 @@ token.json
 chroma_db/
 SETUP_GUIDE_3.md
 scripts/
+.calendar_token.json
