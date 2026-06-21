@@ -5,12 +5,16 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from llm.openai_client import get_llm
 from services.alerts import build_alerts
 from services.knowledge_base import query_knowledge_base
-from services.memory import get_factual_memory, get_session_count, get_session_summaries
+from services.memory import (
+    get_factual_memory,
+    get_session_count,
+    get_session_summaries,
+    get_signals_for_student,
+)
 from services.sheets import (
     get_attendance,
     get_exam_schedules,
     get_exam_scores,
-    get_signals,
     get_student_profile,
 )
 
@@ -227,7 +231,7 @@ def fetch_student_data(state: dict) -> dict:
     scores     = get_exam_scores(student_id)
     attendance = get_attendance(student_id)
     exams      = get_exam_schedules(student_id)
-    signals    = get_signals(student_id)
+    signals    = get_signals_for_student(student_id)
 
     context["scores"]             = scores
     context["attendance_history"] = attendance
