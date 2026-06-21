@@ -24,19 +24,29 @@ import os
 
 from mem0 import MemoryClient
 
+def _get_env(key: str) -> str:
+    """Read from st.secrets first (Streamlit Cloud), then .env (local dev)."""
+    try:
+        import streamlit as st
+        val = st.secrets.get(key, "")
+        if val:
+            return str(val)
+    except Exception:
+        pass
+    return os.getenv(key, "")
+
 _memory_client = None
 
 
 def get_memory_client():
     global _memory_client
-
     if _memory_client is not None:
         return _memory_client
 
-    api_key = os.getenv("MEM0_API_KEY")
+    api_key = _get_env("MEM0_API_KEY")  # ← change from os.getenv
 
     if not api_key:
-        raise ValueError("MEM0_API_KEY is not set.")
+        raise ValueError("MEM0_API_KEY is not set in secrets or .env")
 
     _memory_client = MemoryClient(api_key=api_key)
     return _memory_client
