@@ -94,8 +94,102 @@ def classify_intent(state: dict) -> dict:
     if any(phrase in message for phrase in kb_phrases):
         return {"intent": "knowledge_base"}
 
-    # ── 7. General fallback ────────────────────────────────────────────────────
-    return {"intent": "general"}
+    # ── 7. No keyword matched — fall back to LLM classification ────────────────
+    print(f"Helloooo")
+    return {"intent": _classify_intent_llm(state["message"])}
+
+
+VALID_INTENTS = ["exams", "academics", "overview", "knowledge_base", "briefing", "general"]
+
+
+def _classify_intent_llm(message: str) -> str:
+    """
+    Fallback classifier used only when no keyword rule matched. Asks the LLM
+    to pick exactly one of VALID_INTENTS. Defaults to 'general' on any
+    parsing failure or unexpected output, so a bad LLM response never breaks
+    the graph.
+    """
+    print(f"hi")
+    prompt = f"""You are classifying a student's message to an academic coaching AI
+into exactly ONE category, so the right backend logic can handle it.
+
+Read the message carefully and pick the single best-fitting category below.
+
+── exams ──
+About upcoming tests, exam dates, or exam schedules — anything where the
+student wants to know WHEN something is happening or HOW MANY days are left.
+Examples:
+  "When is my next exam?"
+  "Do I have any tests this week?"
+  "What's coming up that I should prepare for?"
+
+── academics ──
+About past performance: scores, grades, marks, attendance percentage, or
+how they did in a subject. The focus is on DATA ABOUT WHAT ALREADY HAPPENED,
+not what's upcoming.
+Examples:
+  "How did I do in my last math test?"
+  "What's my attendance been like?"
+  "Am I improving in any subject?"
+
+── overview ──
+A broad, holistic check-in about the student as a whole — not one specific
+score or one specific exam. Includes profile questions (who their manager/
+coordinator is, what program/cohort they're in) and "big picture" questions
+about how they're tracking overall.
+Examples:
+  "How am I doing overall?"
+  "What should I be focusing on right now?"
+  "Who is my coordinator?"
+  "Tell me about my program."
+
+── knowledge_base ──
+About HOW TO USE the learning platform/portal itself — navigation, features,
+login issues, course library, leaderboard, placements process, etc. This is
+about the TOOL, not the student's personal academic data.
+Examples:
+  "How do I find my bonus courses?"
+  "Where do I check my placement status?"
+  "I can't log in to the portal."
+
+── briefing ──
+The student or coach is asking for a RECAP of PAST COACHING SESSIONS/
+CONVERSATIONS specifically — not their academic data, but what was
+previously DISCUSSED with this AI.
+Examples:
+  "What did we talk about last time?"
+  "Catch me up on our previous sessions."
+  "Can you recap what we've covered so far?"
+
+── general ──
+Anything that doesn't clearly fit the above — small talk, greetings,
+off-topic questions (movies, sports, trivia), vague messages, or anything
+ambiguous enough that none of the other categories clearly apply.
+Examples:
+  "Hey, how's it going?"
+  "What's the weather like today?"
+  "I'm feeling kind of off today."
+
+──────────────────────────────────────
+Student message: "{message}"
+──────────────────────────────────────
+
+Think about which category's description and examples this message most
+closely resembles, then respond with ONLY the category name — one of:
+exams, academics, overview, knowledge_base, briefing, general
+Do not add punctuation, explanation, or any other text.
+"""
+
+    try:
+        response = llm.invoke([HumanMessage(content=prompt)])
+        intent = response.content.strip().lower()
+        if intent in VALID_INTENTS:
+            return intent
+        print(f"[classify_intent_llm] Unexpected LLM output: {intent!r}")
+    except Exception as exc:
+        print(f"[classify_intent_llm] LLM classification failed: {exc}")
+
+    return "general"
 
 
 # ── Node 2: Fetch Student Data ─────────────────────────────────────────────────
