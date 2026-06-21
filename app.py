@@ -8,7 +8,7 @@ from services.memory import (
     mark_signal_actioned,
 )
 from services.session_summary import extract_facts, extract_signal, generate_session_summary
-from services.daily_planner import generate_daily_plan
+from services.daily_planner import generate_daily_plan, update_plan_for_urgent_signal, resolve_conflict_pick
 from services.meeting_brief import generate_brief
 from services import calendar as cal
 
@@ -69,6 +69,14 @@ if "calendar_results" not in st.session_state:
 
 if "brief_result" not in st.session_state:
     st.session_state.brief_result = None
+
+# ── M9 session state ──────────────────────────────────────────────────────────
+
+if "plan_change_log" not in st.session_state:
+    st.session_state.plan_change_log = []
+
+if "plan_conflict" not in st.session_state:
+    st.session_state.plan_conflict = None
 
 
 # ── Shared helpers ─────────────────────────────────────────────────────────────
@@ -132,6 +140,15 @@ def load_active_signals() -> list[dict]:
 
 
 def render_alert_panel():
+    # ── M9: change log banner ─────────────────────────────────────────────────
+    if st.session_state.plan_change_log:
+        for entry in st.session_state.plan_change_log:
+            st.info(f"⚡ Plan updated: {entry}")
+        if st.button("✅ Clear change log", key="clear_change_log"):
+            st.session_state.plan_change_log = []
+            st.rerun()
+        st.divider()
+
     signals = load_active_signals()
     if not signals:
         st.success("✅ No active alerts — nothing flagged across your roster.")
@@ -329,6 +346,54 @@ def render_meeting_brief():
 def render_coach_page():
     st.title("🧑‍🏫 Coach Dashboard")
 
+    # ── M9: conflict resolution banner ────────────────────────────────────────
+    conflict = st.session_state.get("plan_conflict")
+    if conflict:
+        existing = conflict["existing_student"]
+        new      = conflict["new_student"]
+        st.error(
+            f"⚠️ **Scheduling conflict — two urgent students need slot 1 today.**\n\n"
+            f"**{existing['name']}** (currently slot 1) — "
+            f"severity: `{existing['severity']}`, urgency: `{existing['urgency']}`\n\n"
+            f"> {existing['reason']}\n\n"
+            f"**{new['name']}** (just flagged) — "
+            f"severity: `{new['severity']}`, urgency: `{new['urgency']}`\n\n"
+            f"> {new['reason']}\n\n"
+            f"Who should take slot 1 today?"
+        )
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button(
+                f"🔒 Keep {existing['name']} at slot 1",
+                key="conflict_keep_existing",
+                type="secondary",
+            ):
+                result = resolve_conflict_pick(
+                    plan=conflict["plan"],
+                    conflict=conflict,
+                    prioritize="existing",
+                )
+                st.session_state.daily_plan = result["plan"]
+                st.session_state.plan_change_log.append(result["change_summary"])
+                st.session_state.plan_conflict = None
+                st.rerun()
+        with col2:
+            if st.button(
+                f"🔼 Prioritize {new['name']} — move to slot 1",
+                key="conflict_pick_new",
+                type="primary",
+            ):
+                result = resolve_conflict_pick(
+                    plan=conflict["plan"],
+                    conflict=conflict,
+                    prioritize="new",
+                )
+                st.session_state.daily_plan = result["plan"]
+                st.session_state.plan_change_log.append(result["change_summary"])
+                st.session_state.plan_conflict = None
+                st.rerun()
+        st.divider()
+
     tab_alerts, tab_plan, tab_brief = st.tabs(
         ["🚨 Alerts", "📅 Today's Plan", "🗂️ Pre-Meeting Brief"]
     )
@@ -398,6 +463,32 @@ def render_student_page():
                             load_active_signals.clear()
                         except Exception as exc:
                             print(f"[end_session] save_signal failed: {exc}")
+
+                        # ── M9: update daily plan if signal is urgent ──────
+                        if signal_saved and st.session_state.daily_plan:
+                            try:
+                                # get the student name from the roster options
+                                options = load_student_options()
+                                sid = st.session_state.student_id
+                                student_name = next(
+                                    (lbl.split(" — ", 1)[1] for lbl, s in options if s == sid),
+                                    sid,
+                                )
+                                m9_result = update_plan_for_urgent_signal(
+                                    plan=st.session_state.daily_plan,
+                                    student_id=sid,
+                                    student_name=student_name,
+                                    signal=signal,
+                                )
+                                if m9_result.get("conflict"):
+                                    st.session_state.plan_conflict = m9_result
+                                elif m9_result.get("plan_updated"):
+                                    st.session_state.daily_plan = m9_result["plan"]
+                                    st.session_state.plan_change_log.append(
+                                        m9_result["change_summary"]
+                                    )
+                            except Exception as exc:
+                                print(f"[end_session] M9 plan update failed: {exc}")
 
                     st.session_state.session_artifacts = {
                         "summary": summary,

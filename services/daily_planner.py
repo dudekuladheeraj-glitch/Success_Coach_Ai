@@ -234,6 +234,234 @@ def _resolve_slot_times(assigned_slots: list[dict], day: datetime = None) -> lis
     return resolved
 
 
+def _is_urgent(signal: dict) -> bool:
+    """
+    Returns True if a signal is urgent enough to trigger an M9 plan update.
+    Triggers on: critical (any urgency) OR high + urgency=today.
+    """
+    severity = signal.get("severity", "low")
+    urgency  = signal.get("urgency", "this_week")
+    if severity == "critical":
+        return True
+    if severity == "high" and urgency == "today":
+        return True
+    return False
+
+
+def _slot_is_high_priority(slot: dict) -> bool:
+    """
+    Returns True if the student already in slot 1 is also critical/high+today,
+    meaning we cannot auto-bump them without asking the coach.
+    """
+    severity = slot.get("severity", "low")
+    urgency  = slot.get("urgency", "this_week")
+    if severity == "critical":
+        return True
+    if severity == "high" and urgency == "today":
+        return True
+    return False
+
+
+def update_plan_for_urgent_signal(
+    plan: dict,
+    student_id: str,
+    student_name: str,
+    signal: dict,
+) -> dict:
+    """
+    M9: When a serious signal surfaces mid-day, update the already-generated
+    daily plan to reflect the new urgency.
+
+    Returns a result dict with one of three shapes:
+
+    1. Signal not urgent enough — plan unchanged:
+       {"plan_updated": False, "conflict": False, "plan": plan}
+
+    2. Plan updated successfully — student inserted at slot 1:
+       {"plan_updated": True, "conflict": False, "plan": <updated>,
+        "change_summary": str}
+
+    3. Conflict — slot 1 already has a critical/high+today student:
+       {"plan_updated": False, "conflict": True,
+        "existing_student": {id, name, severity, urgency, reason},
+        "new_student":      {id, name, severity, urgency, reason},
+        "plan": plan}
+    """
+    # ── Step 1: Is this signal urgent enough? ─────────────────────────────────
+    if not _is_urgent(signal):
+        return {"plan_updated": False, "conflict": False, "plan": plan}
+
+    assigned = list(plan.get("assigned_slots", []))
+    deferred = list(plan.get("deferred", []))
+
+    new_slot_base = {
+        "student_id":   student_id,
+        "student_name": student_name,
+        "session_type": "Urgent intervention",
+        "plain_reason": signal.get("reason", "Serious concern flagged during session."),
+        "severity":     signal.get("severity", "high"),
+        "urgency":      signal.get("urgency", "today"),
+        "duration_minutes": SLOT_DURATION_MINUTES,
+    }
+
+    # ── Step 2: Student already in assigned_slots? Promote to slot 1 ──────────
+    existing_index = next(
+        (i for i, s in enumerate(assigned) if s.get("student_id") == student_id),
+        None,
+    )
+    if existing_index is not None:
+        # Check conflict before promoting
+        if existing_index != 0 and assigned and _slot_is_high_priority(assigned[0]):
+            return {
+                "plan_updated": False,
+                "conflict": True,
+                "existing_student": {
+                    "id":       assigned[0]["student_id"],
+                    "name":     assigned[0].get("student_name", assigned[0]["student_id"]),
+                    "severity": assigned[0].get("severity", "unknown"),
+                    "urgency":  assigned[0].get("urgency", "unknown"),
+                    "reason":   assigned[0].get("plain_reason", ""),
+                },
+                "new_student": {
+                    "id":       student_id,
+                    "name":     student_name,
+                    "severity": signal.get("severity"),
+                    "urgency":  signal.get("urgency"),
+                    "reason":   signal.get("reason", ""),
+                },
+                "plan": plan,
+            }
+        # Safe to promote — move to front
+        student_slot = assigned.pop(existing_index)
+        student_slot["session_type"] = "Urgent intervention"
+        student_slot["plain_reason"] = signal.get("reason", student_slot["plain_reason"])
+        student_slot["severity"]     = signal.get("severity", student_slot["severity"])
+        student_slot["urgency"]      = signal.get("urgency", student_slot["urgency"])
+        assigned.insert(0, student_slot)
+        assigned = _resolve_slot_times(assigned)
+        updated_plan = {**plan, "assigned_slots": assigned, "deferred": deferred}
+        return {
+            "plan_updated": True,
+            "conflict": False,
+            "plan": updated_plan,
+            "change_summary": (
+                f"{student_name} promoted to slot 1 (Urgent intervention) — "
+                f"severity escalated to {signal.get('severity')}."
+            ),
+        }
+
+    # ── Step 3: Student in deferred? Remove them (they're being escalated) ────
+    deferred = [d for d in deferred if d.get("student_id") != student_id]
+
+    # ── Step 4: Check slot 1 for conflict ─────────────────────────────────────
+    if assigned and _slot_is_high_priority(assigned[0]):
+        return {
+            "plan_updated": False,
+            "conflict": True,
+            "existing_student": {
+                "id":       assigned[0]["student_id"],
+                "name":     assigned[0].get("student_name", assigned[0]["student_id"]),
+                "severity": assigned[0].get("severity", "unknown"),
+                "urgency":  assigned[0].get("urgency", "unknown"),
+                "reason":   assigned[0].get("plain_reason", ""),
+            },
+            "new_student": {
+                "id":       student_id,
+                "name":     student_name,
+                "severity": signal.get("severity"),
+                "urgency":  signal.get("urgency"),
+                "reason":   signal.get("reason", ""),
+            },
+            "plan": plan,
+        }
+
+    # ── Step 5: Safe to insert at slot 1 ──────────────────────────────────────
+    # Record who was bumped (slot 1 occupant, if any) for the change summary
+    bumped_name = None
+    if assigned:
+        bumped_name = assigned[0].get("student_name", assigned[0].get("student_id"))
+
+    assigned.insert(0, new_slot_base)
+    assigned = _resolve_slot_times(assigned)
+
+    updated_plan = {
+        **plan,
+        "assigned_slots": assigned,
+        "deferred": deferred,
+    }
+
+    if bumped_name:
+        change_summary = (
+            f"{student_name} added as slot 1 (Urgent intervention) — "
+            f"{bumped_name} moved to slot 2."
+        )
+    else:
+        change_summary = (
+            f"{student_name} added as slot 1 (Urgent intervention) — "
+            f"no existing slot 1 to displace."
+        )
+
+    return {
+        "plan_updated": True,
+        "conflict": False,
+        "plan": updated_plan,
+        "change_summary": change_summary,
+    }
+
+
+def resolve_conflict_pick(
+    plan: dict,
+    conflict: dict,
+    prioritize: str,
+) -> dict:
+    """
+    Called when the coach resolves a conflict by picking which student
+    gets slot 1.
+
+    prioritize: "existing" | "new"
+
+    Returns:
+        {"plan": <updated plan>, "change_summary": str}
+    """
+    assigned = list(plan.get("assigned_slots", []))
+    deferred = list(plan.get("deferred", []))
+
+    existing = conflict["existing_student"]
+    new      = conflict["new_student"]
+
+    new_slot_base = {
+        "student_id":     new["id"],
+        "student_name":   new["name"],
+        "session_type":   "Urgent intervention",
+        "plain_reason":   new["reason"],
+        "severity":       new["severity"],
+        "urgency":        new["urgency"],
+        "duration_minutes": SLOT_DURATION_MINUTES,
+    }
+
+    if prioritize == "new":
+        # Insert new student at slot 1; existing student stays at slot 2
+        # (they were already slot 1, so they naturally shift down)
+        assigned.insert(0, new_slot_base)
+        assigned = _resolve_slot_times(assigned)
+        change_summary = (
+            f"{new['name']} placed at slot 1 (Urgent intervention). "
+            f"{existing['name']} moved to slot 2 by coach decision."
+        )
+    else:
+        # Keep existing at slot 1; append new student after all assigned slots
+        # so they're seen today but not bumping the existing priority
+        assigned.append(new_slot_base)
+        assigned = _resolve_slot_times(assigned)
+        change_summary = (
+            f"{existing['name']} kept at slot 1 by coach decision. "
+            f"{new['name']} added as last slot today."
+        )
+
+    updated_plan = {**plan, "assigned_slots": assigned, "deferred": deferred}
+    return {"plan": updated_plan, "change_summary": change_summary}
+
+
 def generate_daily_plan() -> dict:
     """
     Public entry point. Returns:
