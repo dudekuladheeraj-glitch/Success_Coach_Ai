@@ -253,3 +253,120 @@ def get_session_count(student_id: str) -> int:
     except Exception as exc:
         print(f"[memory] get_session_count failed: {exc}")
         return 0
+
+
+# ── Signals (M6) — stored in mem0 instead of the Sheet, since the sheet is
+#    read-only and append_row() requires write/Editor access we don't have. ──
+
+
+def save_signal(student_id: str, signal: dict):
+    """
+    Store a concerning-signal record from extract_signal(), tagged type='signal'.
+    `signal` is the dict returned by extract_signal():
+        {signal_type, severity, urgency, reason}
+
+    actioned=False is set at write time, mirroring the sheet schema, so the
+    alert panel / future M9 automation can filter to un-actioned signals and
+    mark them actioned later via mark_signal_actioned().
+    """
+    if not signal:
+        return None
+
+    client = get_memory_client()
+    # Store a readable text version as the memory content (what mem0 indexes
+    # for search), and keep the structured fields in metadata (what our code
+    # filters/reads from directly — text content may get rephrased by mem0's
+    # own extraction, metadata won't).
+    content = (
+        f"Signal: {signal['signal_type']} (severity: {signal['severity']}, "
+        f"urgency: {signal['urgency']}). Reason: {signal['reason']}"
+    )
+    print(f"[save_signal] Saving signal for {student_id}: {content}")
+    messages = [{"role": "user", "content": content}]
+    return client.add(
+        messages,
+        user_id=student_id,
+        metadata={
+            "type": "signal",
+            "signal_type": signal["signal_type"],
+            "severity": signal["severity"],
+            "urgency": signal["urgency"],
+            "reason": signal["reason"],
+            "actioned": False,
+        },
+    )
+
+
+def get_signals_for_student(student_id: str, include_actioned: bool = False) -> list[dict]:
+    """
+    All signal entries for one student, filtered to type='signal'.
+    By default only un-actioned ones (mirrors get_signals() in sheets.py).
+
+    Returns list of:
+      {id, student_id, signal_type, severity, urgency, reason, actioned, created_at}
+    """
+    try:
+        entries = _get_all(student_id)
+    except Exception as exc:
+        print(f"[memory] get_signals_for_student failed: {exc}")
+        return []
+
+    signals = []
+    for entry in entries:
+        meta = _extract_metadata(entry)
+        if meta.get("type") != "signal":
+            continue
+        if not include_actioned and meta.get("actioned"):
+            continue
+        signals.append({
+            "id": entry.get("id"),
+            "student_id": student_id,
+            "signal_type": meta.get("signal_type"),
+            "severity": meta.get("severity"),
+            "urgency": meta.get("urgency"),
+            "reason": meta.get("reason"),
+            "actioned": meta.get("actioned", False),
+            "created_at": entry.get("created_at") or entry.get("updated_at"),
+        })
+    return signals
+
+
+def get_all_active_signals_across_roster(student_ids: list[str]) -> list[dict]:
+    """
+    Roster-wide alert panel data. mem0 memories are scoped per user_id with
+    no native cross-user query, so this loops get_signals_for_student() over
+    every student in the roster and combines the un-actioned results.
+
+    For a large roster this means one mem0 call per student — fine for
+    typical cohort sizes, but if this ever gets slow, cache the result
+    (the caller already does this via st.cache_data with a short TTL).
+    """
+    all_signals = []
+    for sid in student_ids:
+        try:
+            all_signals.extend(get_signals_for_student(sid, include_actioned=False))
+        except Exception as exc:
+            print(f"[memory] failed to fetch signals for {sid}: {exc}")
+            continue
+    return all_signals
+
+
+def mark_signal_actioned(student_id: str, signal_id: str) -> bool:
+    """
+    Mark one signal as actioned (e.g. coach clicked 'dismiss' / handled it).
+    Uses mem0's update() to patch metadata. Returns True on success.
+
+    NOTE: mem0's update() API shape varies by SDK version — if this fails,
+    check `client.update.__doc__` / mem0's docs for your installed version
+    and adjust the call below; the rest of the module doesn't depend on it.
+    """
+    if not signal_id:
+        return False
+
+    client = get_memory_client()
+    try:
+        client.update(memory_id=signal_id, metadata={"actioned": True})
+        return True
+    except Exception as exc:
+        print(f"[memory] mark_signal_actioned failed: {exc}")
+        return False
